@@ -6,8 +6,10 @@
 //
 //  Apple's real analysis on synthetic clips with known action. Set
 //  HIGHLIGHTS_VIDEOS to a folder holding `control.mp4` (60 s, 1280×720,
-//  static except for action at 25–31 s) and `portrait.mp4` (40 s, 720×1280,
-//  action at 12–17 s). macOS 27 only.
+//  static except for action at 25–31 s), `portrait.mp4` (40 s, 720×1280,
+//  action at 12–17 s), `av1-long.mp4` (any AV1 video longer than 5 minutes,
+//  e.g. 400 s at 640×360 from ffmpeg's libsvtav1), `audio.m4a` and
+//  `garbage.mp4` (random bytes). macOS 27 only.
 //
 
 import Foundation
@@ -40,6 +42,24 @@ struct LiveTests {
                                                        options: HighlightOptions(top: 1, minimumLength: 8, maximumLength: 20))
         let best = try #require(report.moments.first)
         #expect(cover(best, 12...17) >= 0.8, "best moment \(best.start)–\(best.end)")
+    }
+
+    @Test("An AV1 video past Apple's 5-minute chunk, which its analysis gives up on, is analysed through a copy")
+    func longAV1() async throws {
+        let report = try await VideoHighlights.analyze(URL(fileURLWithPath: folder! + "/av1-long.mp4"))
+        #expect(report.usedProxy)
+        #expect(report.duration > 300 && !report.levels.isEmpty)
+        // AVFoundation cannot read the AV1 original's frame either; the copy's
+        // frame at the same time stands in (a film frame, never dark or flat).
+        #expect(report.keyFrame == nil || report.thumbnailSource == .keyFrame)
+    }
+
+    @Test("With copies off, the same AV1 video fails as Apple's analysis does")
+    func longAV1WithoutCopy() async throws {
+        await #expect(throws: VideoHighlightsError.self) {
+            _ = try await VideoHighlights.analyze(URL(fileURLWithPath: folder! + "/av1-long.mp4"),
+                                                  options: HighlightOptions(usesProxy: false))
+        }
     }
 
     @Test("An audio file is refused as having no video, not as Apple's misleading timeout")

@@ -13,7 +13,7 @@ let package = Package(
         .library(name: "VideoHighlights", targets: ["VideoHighlights"]),
     ],
     dependencies: [
-        // The 720p proxy (hardware export) and the thumbnail frame.
+        // The video's facts and the thumbnail frame.
         .package(url: "https://github.com/arraypress/swift-video-forge.git", from: "0.3.1"),
     ],
     targets: [

@@ -22,7 +22,9 @@ public struct HighlightOptions: Sendable, Codable, Equatable, Hashable {
     public var joinGap: Double
 
     /// Analyse a 720p copy when the video is larger than 1080p — the same
-    /// verdict, many times faster on 4K (measured: a 4.5K clip 1,081 s → 15 s).
+    /// verdict, many times faster on 4K (measured: a 4.5K clip 1,081 s → 15 s)
+    /// — and when Apple's analysis gives up on the original (AV1 longer than
+    /// five minutes, measured). Off, the original is analysed or the call fails.
     public var usesProxy: Bool
 
     public init(top: Int = 3, minimumLength: Double = 15, maximumLength: Double = 60,

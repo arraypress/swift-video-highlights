@@ -41,6 +41,10 @@ public enum VideoHighlights {
     /// on for a minute after a cancel), so a long video runs to the end; a
     /// command-line tool stops it by exiting.
     ///
+    /// A video larger than 1080p is analysed through a 720p copy, and so is
+    /// one whose own analysis Apple gives up on (AV1 longer than five
+    /// minutes) — unless `options.usesProxy` is off.
+    ///
     /// - Parameters:
     ///   - url: A movie file.
     ///   - options: How many moments, and how long each may be.
@@ -60,38 +64,57 @@ public enum VideoHighlights {
         guard AppleAnalysis.isAvailable else { throw .unavailable }
 
         let started = ContinuousClock.now
-        let usesProxy: Bool = options.usesProxy && Proxy.needed(width: info.width, height: info.height)
-        let answer: AppleAnswer
-        if usesProxy {
-            let folder: URL = FileManager.default.temporaryDirectory
+        var folder: URL?
+        defer { if let folder { try? FileManager.default.removeItem(at: folder) } }
+        /// The 720p copy, made at most once, in a folder removed on the way out.
+        func makeProxy() async throws(VideoHighlightsError) -> URL {
+            let made: URL = FileManager.default.temporaryDirectory
                 .appendingPathComponent("video-highlights-\(UUID().uuidString)", isDirectory: true)
-            do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) } catch {
+            do { try FileManager.default.createDirectory(at: made, withIntermediateDirectories: true) } catch {
                 throw .proxyFailed(error.localizedDescription)
             }
-            defer { try? FileManager.default.removeItem(at: folder) }
-            answer = try await AppleAnalysis.analyze(try await Proxy.make(from: url, in: folder))
-        } else {
-            answer = try await AppleAnalysis.analyze(url)
+            folder = made
+            return try await Proxy.make(from: url, width: info.width, height: info.height, in: made)
+        }
+
+        var proxy: URL? = options.usesProxy && Proxy.needed(width: info.width, height: info.height)
+            ? try await makeProxy() : nil
+        let answer: AppleAnswer
+        do {
+            answer = try await AppleAnalysis.analyze(proxy ?? url)
+        } catch {
+            // Apple's analysis gives up on some originals (AV1 files
+            // past its first 5-minute chunk) that it reads fine as a copy.
+            guard Proxy.retries(after: error, usedProxy: proxy != nil, allowed: options.usesProxy) else { throw error }
+            let copy: URL = try await makeProxy()
+            proxy = copy
+            answer = try await AppleAnalysis.analyze(copy)
         }
 
         let moments: [HighlightMoment] = MomentRanking.moments(highlights: answer.highlights, levels: answer.levels,
                                                                duration: info.duration, options: options)
         let keyFrame: Double? = answer.keyFrame.flatMap { $0 > 0 ? MomentRanking.rounded($0) : nil }
-        let usable: Bool = await keyFrameIsUsable(url, at: keyFrame)
+        // The copy is the same picture at the same times: it stands in when
+        // the original's frame cannot be read (AV1, measured).
+        let usable: Bool = await keyFrameIsUsable([url] + (proxy.map { [$0] } ?? []), at: keyFrame)
         let thumbnail = ThumbnailChoice.time(keyFrame: keyFrame, keyFrameUsable: usable, moments: moments,
                                              levels: answer.levels, duration: info.duration)
         return HighlightReport(duration: info.duration, moments: moments,
                                highlights: answer.highlights.sorted { $0.lowerBound < $1.lowerBound },
                                levels: answer.levels, keyFrame: keyFrame, thumbnail: thumbnail.seconds,
-                               thumbnailSource: thumbnail.source, usedProxy: usesProxy,
+                               thumbnailSource: thumbnail.source, usedProxy: proxy != nil,
                                seconds: MomentRanking.rounded((ContinuousClock.now - started) / .seconds(1)))
     }
 
-    /// Whether the frame at Apple's key frame is worth showing.
-    private static func keyFrameIsUsable(_ url: URL, at seconds: Double?) async -> Bool {
-        guard let seconds,
-              let frame = try? await Frames.at(url, times: [seconds], maxPixelSize: 256).first,
-              let look = FrameLook.luma(of: frame.image) else { return false }
-        return FrameLook.usable(mean: look.mean, deviation: look.deviation)
+    /// Whether the frame at Apple's key frame is worth showing, read from
+    /// the first of `sources` that gives a frame.
+    private static func keyFrameIsUsable(_ sources: [URL], at seconds: Double?) async -> Bool {
+        guard let seconds else { return false }
+        for source in sources {
+            guard let frame = try? await Frames.at(source, times: [seconds], maxPixelSize: 256).first else { continue }
+            guard let look = FrameLook.luma(of: frame.image) else { return false }
+            return FrameLook.usable(mean: look.mean, deviation: look.deviation)
+        }
+        return false
     }
 }

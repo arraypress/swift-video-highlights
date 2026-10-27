@@ -17,6 +17,18 @@
 //  - It decodes every frame through the hardware decoder: ~8–11× faster than
 //    real time at ≤720p, 9–20× SLOWER than real time on 4.5K HEVC — hence
 //    the proxy.
+//  - It works in 5-minute chunks (7,193 frames at 23.976 fps), each decoded
+//    at 576×324 and re-encoded to H.264 before its models run, so up to
+//    1080p the cost is frames, not pixels: a 10-minute film took 58 s at
+//    1080p, 55 s at 720p, 54.5 s at 360p (2026-10-27, unified log + timing).
+//  - Between chunks it restarts decoding mid-stream; AVFoundation cannot do
+//    that for AV1 (-12911), so every AV1 file longer than one chunk failed
+//    with "Analysis failed to complete" (6 of 6 from ffmpeg's libsvtav1,
+//    shorter ones passed). The
+//    caller retries those on an H.264 copy (Proxy.retries).
+//  - Same file, same top moments every run (≥ 99% of levels); but any re-encode of the same
+//    pictures moves about half the level segments (by ±1 mostly), enough to
+//    reorder close top moments.
 //
 
 import CoreMedia
